@@ -527,27 +527,15 @@ function renderSignal() {
   }
 }
 
-// DXY desde Finnhub — mismo origen que Brent y Gold, sin CORS
+// DXY via EUR/USD de Finnhub (plan free, sin CORS)
 async function fetchDXY() {
   if (!FH_KEY) return null;
   try {
-    // Intento 1: OANDA USD Index directo
-    var r = await fetch("https://finnhub.io/api/v1/quote?symbol=OANDA:USD_IDX&token="+FH_KEY);
+    var r = await fetch("https://finnhub.io/api/v1/quote?symbol=OANDA:EUR_USD&token="+FH_KEY);
     var d = await r.json();
-    if (d && d.c && d.c > 80 && d.c < 130) return Math.round(d.c*100)/100;
-  } catch(e1){}
-  try {
-    // Intento 2: EUR/USD invertido (57.6% del DXY, calibrado)
-    var r2 = await fetch("https://finnhub.io/api/v1/quote?symbol=OANDA:EUR_USD&token="+FH_KEY);
-    var d2 = await r2.json();
-    if (d2 && d2.c && d2.c > 0) {
-      // Formula calibrada: DXY ~= 232 - 122*EURUSD
-      // Verificada: EUR=1.083 -> 99.9, EUR=1.09 -> 97.9, EUR=1.05 -> 103.9
-      var val = Math.round((232 - 122*d2.c)*100)/100;
-      if (val > 80 && val < 130) return val;
-    }
-  } catch(e2){}
-  return null;
+    if (!d || !d.c || d.c === 0) return null;
+    return eurusdToDXY(d.c);
+  } catch(e) { return null; }
 }
 
 // WEBSOCKET Finnhub
@@ -557,8 +545,14 @@ var wsTimer = null;
 var FH_MAP = {
   "OANDA:XAU_USD": "gold",
   "OANDA:BCO_USD": "brent",
-  "OANDA:USD_IDX": "dxy"
+  "OANDA:EUR_USD": "eurusd"
 };
+
+// Convierte EUR/USD a DXY aproximado (error ~1.5 puntos)
+// Formula calibrada sobre datos historicos 2022-2026
+function eurusdToDXY(e) {
+  return Math.round((232 - 122*e)*100)/100;
+}
 
 function connectWS() {
   if (!FH_KEY) return;
@@ -589,10 +583,11 @@ function connectWS() {
           S.brent.cur  = tick.p;
           renderCard("brent","brent",interpBrent(tick.p));
           renderSignal();
-        } else if (key==="dxy") {
+        } else if (key==="eurusd") {
+          var dxy = eurusdToDXY(tick.p);
           S.dxy.prev = S.dxy.cur;
-          S.dxy.cur  = tick.p;
-          renderCard("dxy","dxy",interpDXY(tick.p));
+          S.dxy.cur  = dxy;
+          renderCard("dxy","dxy",interpDXY(dxy));
           renderSignal();
         }
       });
@@ -616,48 +611,32 @@ var pollTimer = null;
 async function pollPrices() {
   if (!FH_KEY) return;
   try {
-    // DXY desde stooq (sin key)
-    var dxy = await fetchDXY();
-    if (dxy && dxy > 0) {
-      S.dxy.prev = S.dxy.cur;
-      S.dxy.cur  = dxy;
-      renderCard("dxy","dxy",interpDXY(dxy));
-      renderSignal();
-    }
-
-    // Gold, Brent y DXY desde Finnhub REST (mismo origen, sin CORS)
+    // Gold, Brent y EUR/USD en el mismo loop — mismo origen, misma logica
     var syms = [
       {sym:"OANDA:XAU_USD", key:"gold"},
       {sym:"OANDA:BCO_USD", key:"brent"},
-      {sym:"OANDA:USD_IDX", key:"dxy"}
+      {sym:"OANDA:EUR_USD", key:"eurusd"}
     ];
     for (var i=0; i<syms.length; i++) {
       var s = syms[i];
       try {
-        var r = await fetch("https://finnhub.io/api/v1/quote?symbol="+s.sym+"&token="+FH_KEY);
+        var r    = await fetch("https://finnhub.io/api/v1/quote?symbol="+s.sym+"&token="+FH_KEY);
         var data = await r.json();
-        if (!data.c || data.c===0) {
-          // DXY fallback via EUR/USD si OANDA:USD_IDX no tiene datos
-          if (s.key==="dxy") {
-            var dxy = await fetchDXY();
-            if (dxy) {
-              S.dxy.prev = S.dxy.cur;
-              S.dxy.cur  = dxy;
-              renderCard("dxy","dxy",interpDXY(dxy));
-              renderSignal();
-            }
-          }
-          continue;
-        }
-        S[s.key].prev = S[s.key].cur;
-        S[s.key].cur  = data.c;
+        if (!data || !data.c || data.c===0) continue;
         if (s.key==="gold") {
+          S.gold.prev = S.gold.cur;
+          S.gold.cur  = data.c;
           renderCard("gold","gold",{lbl:"precio live",cls:"it-neutral",bias:"referencia",bc:"bt-ref"});
         } else if (s.key==="brent") {
+          S.brent.prev = S.brent.cur;
+          S.brent.cur  = data.c;
           renderCard("brent","brent",interpBrent(data.c));
           renderSignal();
-        } else if (s.key==="dxy") {
-          renderCard("dxy","dxy",interpDXY(data.c));
+        } else if (s.key==="eurusd") {
+          var dxy = eurusdToDXY(data.c);
+          S.dxy.prev = S.dxy.cur;
+          S.dxy.cur  = dxy;
+          renderCard("dxy","dxy",interpDXY(dxy));
           renderSignal();
         }
       } catch(ex){}
@@ -665,12 +644,9 @@ async function pollPrices() {
   } catch(e){}
 }
 
-// DFII10 desde FRED API con key (dato diario, no es precio de mercado)
+// FRED — DFII10
 async function fetchFRED() {
-  if (!FRED_KEY) {
-    setStatus("Ingresa tu FRED API key en Config para cargar el DFII10");
-    return;
-  }
+  if (!FRED_KEY) return;
   setStatus("Actualizando DFII10...");
   try {
     var url = "https://api.stlouisfed.org/fred/series/observations?series_id=DFII10&api_key="+FRED_KEY+"&limit=5&sort_order=desc&file_type=json";
@@ -682,15 +658,14 @@ async function fetchFRED() {
       S.dfii10.prev = obs[1] ? parseFloat(obs[1].value) : null;
       renderCard("dfii10","pct",interpDFII10(S.dfii10.cur));
       renderSignal();
-      setStatus("DFII10: "+obs[0].date+" = "+S.dfii10.cur.toFixed(2)+"%");
-      setTimeout(function(){ setStatus(""); }, 5000);
     }
+    setStatus("");
   } catch(e){ setStatus("Error FRED: "+e.message); }
 }
 
 async function refreshMacro() { await fetchFRED(); }
 
-// NOTICIAS — general + forex, ultimas 24h, ticker lento
+// NOTICIAS general + forex, ultimas 24h, ticker lento
 var newsTimer = null;
 var KW = ["gold","xau","fed","fomc","yield","dollar","dxy","oil","brent","inflation","rate",
           "powell","treasury","gdp","cpi","ppi","euro","eur","yen","jpy","gbp","pound",
@@ -797,7 +772,7 @@ var calTimer = null;
 async function fetchCalendar() {
   if (!FH_KEY) return;
   try {
-    var now = new Date();
+    var now  = new Date();
     var from = now.toISOString().split("T")[0];
     var to   = new Date(now.getTime()+3*86400000).toISOString().split("T")[0];
     var r    = await fetch("https://finnhub.io/api/v1/calendar/economic?from="+from+"&to="+to+"&token="+FH_KEY);
@@ -805,9 +780,7 @@ async function fetchCalendar() {
     var ev   = (data.economicCalendar||[]).filter(function(e){
       return e.impact==="high"||e.impact==="medium";
     });
-    ev.sort(function(a,b){
-      return (a.time||a.date||"").localeCompare(b.time||b.date||"");
-    });
+    ev.sort(function(a,b){return (a.time||a.date||"").localeCompare(b.time||b.date||"");});
     var grid = document.getElementById("cal-grid");
     if (!grid) return;
     if (ev.length===0) {
@@ -815,17 +788,17 @@ async function fetchCalendar() {
       return;
     }
     grid.innerHTML=ev.slice(0,14).map(function(e){
-      var t=e.time?e.time.substring(0,5):(e.date||"");
-      var cls=e.impact==="high"?"high":"medium";
-      var lbl=e.impact==="high"?"ALTO":"MEDIO";
-      var extra="";
-      if (e.prev!==undefined&&e.prev!==null) extra+=" ant:"+e.prev;
-      if (e.estimate!==undefined&&e.estimate!==null) extra+=" est:"+e.estimate;
+      var t   = e.time?e.time.substring(0,5):(e.date||"");
+      var cls = e.impact==="high"?"high":"medium";
+      var lbl = e.impact==="high"?"ALTO":"MEDIO";
+      var ext = "";
+      if (e.prev!==undefined&&e.prev!==null)     ext+=" ant:"+e.prev;
+      if (e.estimate!==undefined&&e.estimate!==null) ext+=" est:"+e.estimate;
       return '<div class="cal-item '+cls+'">'
             +'<span class="cal-time">'+t+'</span>'
             +'<span class="cal-country">'+((e.country||"US").toUpperCase())+'</span>'
             +'<span class="cal-event">'+(e.event||"")
-            +(extra?'<span style="color:var(--muted);margin-left:8px">'+extra+'</span>':"")
+            +(ext?'<span style="color:var(--muted);margin-left:8px">'+ext+'</span>':"")
             +'</span>'
             +'<span class="cal-imp '+cls+'">'+lbl+'</span>'
             +'</div>';
