@@ -137,20 +137,17 @@ body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-ser
 .chip.c-neut{border-color:rgba(232,160,32,.35);color:var(--neutral);background:rgba(232,160,32,.04)}
 .disclaimer-panel{background:rgba(77,124,254,.04);border:1px solid rgba(77,124,254,.12);border-radius:10px;padding:14px 18px;max-width:280px;font-size:11px;color:rgba(77,124,254,.65);line-height:1.7}
 .disclaimer-panel strong{color:rgba(77,124,254,.85)}
-
-/* ECONOMIC CALENDAR */
 .cal-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px}
 .cal-grid{display:flex;flex-direction:column;gap:6px;margin-top:10px}
-.cal-item{display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--bg);border-radius:6px;border-left:3px solid var(--muted);font-family:"JetBrains Mono",monospace;font-size:11px}
-.cal-item.high{border-left-color:var(--bear)}
-.cal-item.medium{border-left-color:var(--neutral)}
-.cal-time{color:var(--muted2);min-width:48px;flex-shrink:0}
-.cal-country{color:var(--muted);min-width:28px;flex-shrink:0;font-size:10px;letter-spacing:.1em}
+.cal-item{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg);border-radius:6px;border-left:3px solid var(--muted);font-family:"JetBrains Mono",monospace;font-size:11px}
+.cal-item.high{border-left-color:var(--bear)}.cal-item.medium{border-left-color:var(--neutral)}
+.cal-time{color:var(--muted2);min-width:50px;flex-shrink:0}
+.cal-country{color:var(--muted);min-width:28px;flex-shrink:0;font-size:10px;letter-spacing:.08em}
 .cal-event{color:var(--text);flex:1}
-.cal-impact{font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 8px;border-radius:3px;flex-shrink:0}
-.cal-impact.high{background:rgba(224,62,62,.12);color:var(--bear)}
-.cal-impact.medium{background:rgba(232,160,32,.12);color:var(--neutral)}
-.cal-empty{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--muted);padding:8px 0}
+.cal-imp{font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:2px 8px;border-radius:3px;flex-shrink:0}
+.cal-imp.high{background:rgba(224,62,62,.12);color:var(--bear)}
+.cal-imp.medium{background:rgba(232,160,32,.12);color:var(--neutral)}
+.cal-empty{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--muted);padding:6px 0}
 
 /* CONFIG BAR */
 .config-bar{display:flex;align-items:center;gap:10px;padding:12px 28px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
@@ -319,9 +316,8 @@ body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-ser
         Confirma siempre con analisis tecnico antes de operar.
       </div>
     </div>
-
     <div class="cal-panel">
-      <div class="panel-title">Calendario economico &mdash; alto impacto (hoy / proximos 3 dias)</div>
+      <div class="panel-title">Calendario economico &mdash; alto impacto (hoy + 3 dias)</div>
       <div class="cal-grid" id="cal-grid"><span class="cal-empty">Cargando calendario...</span></div>
     </div>
   </div>
@@ -531,20 +527,24 @@ function renderSignal() {
   }
 }
 
-// DXY desde Yahoo Finance (sin key, exacto)
+// DXY via CORS proxy -> stooq (funciona desde GitHub Pages)
 async function fetchDXY() {
-  try {
-    var url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=5d";
-    var r = await fetch(url);
-    var d = await r.json();
-    var res = d && d.chart && d.chart.result && d.chart.result[0];
-    if (!res) return null;
-    var closes = res.indicators && res.indicators.quote && res.indicators.quote[0] && res.indicators.quote[0].close;
-    if (!closes) return null;
-    var valid = closes.filter(function(v){ return v !== null && !isNaN(v); });
-    if (valid.length === 0) return null;
-    return Math.round(valid[valid.length-1] * 100) / 100;
-  } catch(e) { return null; }
+  var proxies = [
+    "https://corsproxy.io/?https://stooq.com/q/l/?s=dxy&f=sd2t2ohlcv&h&e=csv",
+    "https://api.allorigins.win/raw?url=https://stooq.com/q/l/?s=dxy%26f=sd2t2ohlcv%26h%26e=csv"
+  ];
+  for (var i=0; i<proxies.length; i++) {
+    try {
+      var r = await fetch(proxies[i]);
+      var txt = await r.text();
+      var lines = txt.trim().split("\n");
+      if (lines.length < 2) continue;
+      var cols = lines[1].split(",");
+      var val = parseFloat(cols[4]);
+      if (!isNaN(val) && val > 80 && val < 130) return val;
+    } catch(e) {}
+  }
+  return null;
 }
 
 // WEBSOCKET Finnhub
@@ -638,52 +638,60 @@ async function pollPrices() {
   } catch(e){}
 }
 
-// DFII10 — primario: CSV publico sin key / secundario: API con key
+// DFII10 — FRED API con key (primario) + proxy CSV (fallback)
 async function fetchFRED() {
   setStatus("Actualizando DFII10...");
-  var ok = false;
-  // Intento 1: CSV publico (sin key, sin CORS en GitHub Pages)
-  try {
-    var url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10";
-    var r = await fetch(url);
-    var txt = await r.text();
-    var rows = txt.trim().split("\n").slice(1).filter(function(l){
-      return l && l.indexOf(".") === -1 || l.split(",")[1] !== ".";
-    });
-    rows = rows.filter(function(l){ return l.split(",")[1] !== "."; });
-    if (rows.length >= 1) {
-      var last = rows[rows.length-1].split(",");
-      var prev = rows.length > 1 ? rows[rows.length-2].split(",") : null;
-      var val = parseFloat(last[1]);
-      if (!isNaN(val)) {
-        S.dfii10.cur  = val;
-        S.dfii10.prev = prev ? parseFloat(prev[1]) : null;
-        renderCard("dfii10","pct",interpDFII10(val));
-        renderSignal();
-        setStatus("DFII10: "+last[0]+" = "+val.toFixed(2)+"%");
-        setTimeout(function(){ setStatus(""); }, 5000);
-        ok = true;
-      }
-    }
-  } catch(e1){}
-  // Intento 2: API con key si el CSV fallo
-  if (!ok && FRED_KEY) {
+  var loaded = false;
+  // Intento 1: FRED API con key
+  if (FRED_KEY) {
     try {
-      var url2 = "https://api.stlouisfed.org/fred/series/observations?series_id=DFII10&api_key="+FRED_KEY+"&limit=5&sort_order=desc&file_type=json";
-      var r2 = await fetch(url2);
-      var data2 = await r2.json();
-      var obs = (data2.observations || []).filter(function(o){ return o.value !== "."; });
+      var url = "https://api.stlouisfed.org/fred/series/observations?series_id=DFII10&api_key="+FRED_KEY+"&limit=5&sort_order=desc&file_type=json";
+      var r = await fetch(url);
+      var data = await r.json();
+      var obs = (data.observations||[]).filter(function(o){return o.value!=="."});
       if (obs.length > 0) {
         S.dfii10.cur  = parseFloat(obs[0].value);
         S.dfii10.prev = obs[1] ? parseFloat(obs[1].value) : null;
         renderCard("dfii10","pct",interpDFII10(S.dfii10.cur));
         renderSignal();
-        setStatus("DFII10 (key): "+obs[0].date);
-        setTimeout(function(){ setStatus(""); }, 5000);
+        setStatus("DFII10: "+obs[0].date+" = "+S.dfii10.cur.toFixed(2)+"%");
+        setTimeout(function(){setStatus("");},5000);
+        loaded = true;
       }
-    } catch(e2){ setStatus("Error DFII10: "+e2.message); }
+    } catch(e1){}
   }
-  if (!ok && !FRED_KEY) setStatus("DFII10: ingresa FRED key en Config");
+  // Intento 2: CSV via proxy (sin key)
+  if (!loaded) {
+    var csvUrls = [
+      "https://corsproxy.io/?https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10",
+      "https://api.allorigins.win/raw?url=https://fred.stlouisfed.org/graph/fredgraph.csv%3Fid%3DDFII10"
+    ];
+    for (var i=0; i<csvUrls.length; i++) {
+      try {
+        var r2 = await fetch(csvUrls[i]);
+        var txt = await r2.text();
+        var rows = txt.trim().split("\n").slice(1).filter(function(l){
+          var p=l.split(","); return p.length>=2 && p[1]!=="." && p[1]!=="";
+        });
+        if (rows.length >= 1) {
+          var last = rows[rows.length-1].split(",");
+          var prev = rows.length>1 ? rows[rows.length-2].split(",") : null;
+          var val = parseFloat(last[1]);
+          if (!isNaN(val)) {
+            S.dfii10.cur  = val;
+            S.dfii10.prev = prev ? parseFloat(prev[1]) : null;
+            renderCard("dfii10","pct",interpDFII10(val));
+            renderSignal();
+            setStatus("DFII10: "+last[0]+" = "+val.toFixed(2)+"%");
+            setTimeout(function(){setStatus("");},5000);
+            loaded = true;
+            break;
+          }
+        }
+      } catch(e2){}
+    }
+  }
+  if (!loaded) setStatus("Error DFII10: ingresa FRED key en Config API Keys");
 }
 
 async function refreshMacro() { await fetchFRED(); }
@@ -692,8 +700,7 @@ async function refreshMacro() { await fetchFRED(); }
 var newsTimer = null;
 var KW = ["gold","xau","fed","fomc","yield","dollar","dxy","oil","brent","inflation","rate",
           "powell","treasury","gdp","cpi","ppi","euro","eur","yen","jpy","gbp","pound",
-          "forex","currency","ecb","boe","boj","central bank","stagflation","safe haven",
-          "tightening","easing","risk","copper","silver"];
+          "forex","currency","ecb","boe","boj","central bank","stagflation","safe haven"];
 
 function newsAge(ts) {
   var h = (Date.now()/1000 - ts) / 3600;
@@ -704,46 +711,41 @@ async function fetchNews() {
   if (!FH_KEY) return;
   try {
     var results = await Promise.allSettled([
-      fetch("https://finnhub.io/api/v1/news?category=general&token="+FH_KEY).then(function(r){ return r.json(); }),
-      fetch("https://finnhub.io/api/v1/news?category=forex&token="+FH_KEY).then(function(r){ return r.json(); })
+      fetch("https://finnhub.io/api/v1/news?category=general&token="+FH_KEY).then(function(r){return r.json();}),
+      fetch("https://finnhub.io/api/v1/news?category=forex&token="+FH_KEY).then(function(r){return r.json();})
     ]);
     var all = [];
     results.forEach(function(res){
-      if (res.status === "fulfilled" && Array.isArray(res.value)) all = all.concat(res.value);
+      if (res.status==="fulfilled" && Array.isArray(res.value)) all=all.concat(res.value);
     });
-    if (all.length === 0) return;
-    // Deduplicar
-    var seen = {};
-    all = all.filter(function(n){
-      var key = n.id || n.headline;
-      if (!key || seen[key]) return false;
-      seen[key] = true; return true;
+    if (all.length===0) return;
+    var seen={};
+    all=all.filter(function(n){
+      var k=n.id||n.headline; if(!k||seen[k]) return false; seen[k]=true; return true;
     });
-    // Filtrar: ultimas 24h + keywords relevantes
-    var cutoff = Date.now()/1000 - 86400;
-    var filtered = all.filter(function(n){
-      if (!n.headline || n.datetime < cutoff) return false;
-      var txt = n.headline.toLowerCase();
-      return KW.some(function(k){ return txt.indexOf(k) !== -1; });
+    var cutoff=Date.now()/1000-86400;
+    var filtered=all.filter(function(n){
+      if (!n.headline||n.datetime<cutoff) return false;
+      var txt=n.headline.toLowerCase();
+      return KW.some(function(k){return txt.indexOf(k)!==-1;});
     });
-    filtered.sort(function(a,b){ return b.datetime - a.datetime; });
-    filtered = filtered.slice(0, 20);
-    if (filtered.length === 0) return;
-    var items = filtered.concat(filtered);
-    var html  = items.map(function(n){
-      var cat = n.category === "forex" ? " [FX]" : "";
+    filtered.sort(function(a,b){return b.datetime-a.datetime;});
+    filtered=filtered.slice(0,20);
+    if (filtered.length===0) return;
+    var items=filtered.concat(filtered);
+    var html=items.map(function(n){
+      var cat=n.category==="forex"?" [FX]":"";
       return '<a class="ticker-item" href="'+(n.url||"#")+'" target="_blank" rel="noopener">'
-           + '<span class="ticker-dot"></span>'
-           + '<span>'+escHtml(n.headline||"")+cat+'</span>'
-           + '<span style="font-size:10px;color:var(--muted);margin-left:6px">'+newsAge(n.datetime)+'</span>'
-           + '</a>';
+           +'<span class="ticker-dot"></span>'
+           +'<span>'+escHtml(n.headline||"")+cat+'</span>'
+           +'<span style="font-size:10px;color:var(--muted);margin-left:6px">'+newsAge(n.datetime)+'</span>'
+           +'</a>';
     }).join("");
-    var ticker = document.getElementById("news-ticker");
-    ticker.innerHTML = html;
-    ticker.style.animation = "none";
+    var ticker=document.getElementById("news-ticker");
+    ticker.innerHTML=html;
+    ticker.style.animation="none";
     ticker.offsetHeight;
-    ticker.style.animationDuration = "120s";
-    ticker.style.animation = "ticker-scroll 120s linear infinite";
+    ticker.style.animation="ticker-scroll 120s linear infinite";
   } catch(e){}
 }
 
@@ -796,45 +798,47 @@ function saveCfg() {
 }
 function setStatus(m) { document.getElementById("status-msg").textContent = m; }
 
-// CALENDARIO ECONOMICO — Finnhub, solo alto impacto
+// CALENDARIO ECONOMICO
 var calTimer = null;
-
 async function fetchCalendar() {
   if (!FH_KEY) return;
   try {
     var now = new Date();
     var from = now.toISOString().split("T")[0];
-    var to = new Date(now.getTime() + 3*86400000).toISOString().split("T")[0];
-    var url = "https://finnhub.io/api/v1/calendar/economic?from="+from+"&to="+to+"&token="+FH_KEY;
+    var future = new Date(now.getTime()+3*86400000).toISOString().split("T")[0];
+    var url = "https://finnhub.io/api/v1/calendar/economic?from="+from+"&to="+future+"&token="+FH_KEY;
     var r = await fetch(url);
     var data = await r.json();
     var events = data.economicCalendar || [];
-    // Solo alto impacto, ordenar por tiempo
-    var high = events.filter(function(e){
-      return e.impact === "high" || e.impact === "medium";
+    var filtered = events.filter(function(e){
+      return e.impact==="high" || e.impact==="medium";
     });
-    high.sort(function(a,b){
-      return (a.time || a.date || "").localeCompare(b.time || b.date || "");
+    filtered.sort(function(a,b){
+      var ta=(a.time||a.date||""), tb=(b.time||b.date||"");
+      return ta.localeCompare(tb);
     });
     var grid = document.getElementById("cal-grid");
-    if (high.length === 0) {
-      grid.innerHTML = '<span class="cal-empty">Sin eventos de alto impacto en los proximos 3 dias</span>';
+    if (!grid) return;
+    if (filtered.length===0) {
+      grid.innerHTML='<span class="cal-empty">Sin eventos de alto o medio impacto en los proximos 3 dias</span>';
       return;
     }
-    grid.innerHTML = high.slice(0,12).map(function(e){
-      var timeStr = e.time ? e.time.substring(0,5) : (e.date || "");
-      var cls = e.impact === "high" ? "high" : "medium";
-      var impactLbl = e.impact === "high" ? "ALTO" : "MEDIO";
+    grid.innerHTML=filtered.slice(0,14).map(function(e){
+      var t=e.time?e.time.substring(0,5):(e.date||"");
+      var cls=e.impact==="high"?"high":"medium";
+      var lbl=e.impact==="high"?"ALTO":"MEDIO";
+      var prev=e.prev!==undefined&&e.prev!==null?" | ant: "+e.prev:"";
+      var est=e.estimate!==undefined&&e.estimate!==null?" | est: "+e.estimate:"";
       return '<div class="cal-item '+cls+'">'
-           + '<span class="cal-time">'+timeStr+'</span>'
-           + '<span class="cal-country">'+(e.country||"US").toUpperCase()+'</span>'
-           + '<span class="cal-event">'+(e.event||e.description||"")+'</span>'
-           + '<span class="cal-impact '+cls+'">'+impactLbl+'</span>'
-           + '</div>';
+            +'<span class="cal-time">'+t+'</span>'
+            +'<span class="cal-country">'+((e.country||"US").toUpperCase())+'</span>'
+            +'<span class="cal-event">'+(e.event||"")+(prev||est?'<span style="color:var(--muted);margin-left:6px">'+prev+est+'</span>':'')+'</span>'
+            +'<span class="cal-imp '+cls+'">'+lbl+'</span>'
+            +'</div>';
     }).join("");
   } catch(e){
-    var grid = document.getElementById("cal-grid");
-    if (grid) grid.innerHTML = '<span class="cal-empty">Error al cargar calendario</span>';
+    var g=document.getElementById("cal-grid");
+    if(g) g.innerHTML='<span class="cal-empty">Error al cargar calendario</span>';
   }
 }
 
